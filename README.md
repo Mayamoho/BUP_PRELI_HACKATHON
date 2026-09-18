@@ -107,7 +107,7 @@ Production API: **https://bup-preli-hackathon.onrender.com**. Render auto-deploy
 
 ## Vercel deployment (alternative)
 
-Alternative deployment target (same code, not the submitted URL): https://gridwise-bup-preli.vercel.app
+Alternative deployment target (not the submitted URL; redeploy it from `main` to run the final code): https://gridwise-bup-preli.vercel.app
 
 The service is deployed on Vercel with the native FastAPI entrypoint `app/main.py`. `.python-version` selects Python 3.12 and `vercel.json` sets a 30-second function duration. `.vercelignore` excludes secrets and development assets. The Groq credential is stored as a private Vercel environment variable and is not present in the source or image.
 
@@ -117,7 +117,7 @@ The service is deployed on Vercel with the native FastAPI entrypoint `app/main.p
 4. Deploy; ensure the submitted URL permits unauthenticated access to both judging endpoints. Redeploy when environment variables change.
 5. From outside Vercel, check `/health` and run `scripts/run_samples.py https://gridwise-bup-preli.vercel.app`. Require 10/10 and measure latency with fresh notes, not only cache hits.
 
-On 2026-09-18, the production URL returned healthy and passed all 10 public cases with live model interpretation, ground-truth replay and exact reference costs. Measured end-to-end latency was 0.61–1.34 seconds for that run. This evidence does not guarantee hidden-case behavior or future provider quota. Official guide: https://vercel.com/docs/frameworks/backend/fastapi
+On 2026-09-18, that Vercel URL returned healthy and passed all 10 public cases with live model interpretation, ground-truth replay and exact reference costs. Measured end-to-end latency was 0.61–1.34 seconds for that run. This evidence does not guarantee hidden-case behavior or future provider quota. Official guide: https://vercel.com/docs/frameworks/backend/fastapi
 
 ## Docker fallback
 
@@ -140,4 +140,4 @@ Scoring: interpretation 25, constraints 25, optimization 10, API 10, reliability
 
 Malformed input returns 400 (unknown extra fields are ignored; types stay strict), impossible interpreted constraints 422, missing model configuration makes health return 503 (`GET` and `HEAD` are both supported), and model/internal/verification failure returns a controlled 500. There is a 256 KiB request limit, a bounded read deadline, and a 27-second processing deadline. Per-process caching does not survive serverless cold starts or share entries across instances. Adequate provider quota remains necessary.
 
-Credits: team repository implementation, Codex-assisted review and hardening, BUP supplied challenge/sample pack; FastAPI/Starlette, Pydantic, HTTPX, NumPy/SciPy/HiGHS, Uvicorn, python-dotenv and pytest. Review and understand the logic before presenting it as the team's submission.
+Credits: team repository implementation; AI coding assistants (Claude Code and Codex) were used for review, testing and hardening, as the rulebook permits. Language models: OpenAI GPT-OSS 120B/20B and Qwen 3.8 27B served by Groq, and Google Gemini 3.5 Flash-Lite as the backup provider. BUP supplied the challenge and sample pack. Libraries: FastAPI/Starlette, Pydantic, HTTPX, NumPy/SciPy/HiGHS, Uvicorn, python-dotenv and pytest.
