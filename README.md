@@ -50,7 +50,7 @@ The first sample's optimal cost is 38,365 BDT. Complete reference requests and r
 | `LLM_API_KEY` | Required secret; `GROQ_API_KEY` is also accepted |
 | `LLM_BASE_URL` | `https://api.groq.com/openai/v1` |
 | `LLM_MODEL` | `qwen/qwen3.8-27b` — primary model |
-| `LLM_FALLBACK_MODELS` | `openai/gpt-oss-20b` — real model fallback; comma-separated |
+| `LLM_FALLBACK_MODELS` | `openai/gpt-oss-120b,openai/gpt-oss-20b` — real model fallbacks; comma-separated |
 | `LLM_REASONING_EFFORT` | `low` for GPT-OSS; Qwen uses `none` for instruct mode |
 | `LLM_TIMEOUT_SECONDS` | 10 seconds per provider attempt |
 | `LLM_TOTAL_BUDGET_SECONDS` | 20 seconds per extraction invocation, bounded by the shared 23-second interpretation deadline |
@@ -107,7 +107,7 @@ The selected target is Vercel. The native FastAPI entrypoint is `app/main.py`; `
 
 1. Import this GitHub repository into Vercel using an account with repository access. Select branch `codex/verified-api-vercel` for a review deployment, or the merged production branch later.
 2. Use repository root and the FastAPI framework preset. Keep default build settings; do not configure a frontend output directory or a Uvicorn start command.
-3. Set `LLM_API_KEY` as a secret, `LLM_BASE_URL=https://api.groq.com/openai/v1`, `LLM_MODEL=qwen/qwen3.8-27b`, `LLM_FALLBACK_MODELS=openai/gpt-oss-20b`, and `LLM_REASONING_EFFORT=low`.
+3. Set `LLM_API_KEY` as a secret, `LLM_BASE_URL=https://api.groq.com/openai/v1`, `LLM_MODEL=qwen/qwen3.8-27b`, `LLM_FALLBACK_MODELS=openai/gpt-oss-120b,openai/gpt-oss-20b`, and `LLM_REASONING_EFFORT=low`.
 4. Deploy; ensure the submitted URL permits unauthenticated access to both judging endpoints. Redeploy when environment variables change.
 5. From outside Vercel, check `/health` and run `scripts/run_samples.py https://YOUR_PROJECT.vercel.app`. Require 10/10 and measure latency with fresh notes, not only cache hits.
 
