@@ -1,19 +1,11 @@
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StrictBool, StrictInt, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
 
 
 Number = Annotated[float, Field(strict=True, allow_inf_nan=False)]
 Nonnegative = Annotated[Number, Field(ge=0)]
 HourIndex = Annotated[StrictInt, Field(ge=0, le=23)]
-
-
-def _whole_float_to_int(v):
-    # accept 3.0 for hour 3 (some JSON encoders emit floats); 3.5, "3" and true stay invalid
-    return int(v) if type(v) is float and v.is_integer() else v
-
-
-RequestHourIndex = Annotated[HourIndex, BeforeValidator(_whole_float_to_int)]
 Text = Annotated[str, Field(strict=True, min_length=1)]
 
 
@@ -21,20 +13,14 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
-class RequestModel(StrictModel):
-    # Request objects tolerate unknown extra fields (types stay strict): a harness that adds
-    # metadata must not turn a valid scenario into a 400.
-    model_config = ConfigDict(extra="ignore", allow_inf_nan=False)
-
-
-class Hour(RequestModel):
-    hour: RequestHourIndex
+class Hour(StrictModel):
+    hour: HourIndex
     demand_kwh: Nonnegative
     solar_kwh: Nonnegative
     tariff_bdt_per_kwh: Number
 
 
-class Battery(RequestModel):
+class Battery(StrictModel):
     capacity_kwh: Nonnegative
     initial_energy_kwh: Nonnegative
     minimum_energy_kwh: Nonnegative
@@ -48,7 +34,7 @@ class Battery(RequestModel):
         return self
 
 
-class Scenario(RequestModel):
+class Scenario(StrictModel):
     scenario_id: Text
     operator_notes: Annotated[list[Text], Field(min_length=1, max_length=3)]
     hours: Annotated[list[Hour], Field(min_length=24, max_length=24)]

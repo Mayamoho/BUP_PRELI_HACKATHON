@@ -1,5 +1,4 @@
-"""Strict GridWise API: invalid input is rejected, an invalid plan never becomes a 200 response, and a
-language-model outage degrades to the guarded backup interpreter instead of failing the request."""
+"""Strict GridWise API: a failed model or invalid plan never becomes a 200 response."""
 from __future__ import annotations
 
 import asyncio
@@ -65,13 +64,14 @@ async def unhandled(request, exc):
     return _error(500, "internal error")
 
 
-@app.api_route("/health", methods=["GET", "HEAD"])
+@app.get("/health")
 async def health():
-    # Ready as soon as the process serves requests; without a key, notes use the guarded backup.
+    if not llm_configured():
+        return _error(503, "language model not configured")
     return {"status": "ok"}
 
 
-@app.api_route("/", methods=["GET", "HEAD"])
+@app.get("/")
 async def root():
     return {"service": "GridWise LLM", "endpoints": ["GET /health", "POST /optimize-energy"],
             "llm_model": model_name(), "llm_configured": llm_configured()}
