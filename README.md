@@ -46,21 +46,18 @@ The first sample's optimal cost is 38,365 BDT. Complete reference requests and r
 
 | Variable | Default / purpose |
 |---|---|
-| `LLM_API_KEY` | Required secret; `GROQ_API_KEY` is also accepted. Several comma-separated keys are allowed (useful only if they come from different provider accounts, because Groq limits are per account) |
+| `LLM_API_KEY` | Required secret; `GROQ_API_KEY` is also accepted |
 | `LLM_BASE_URL` | `https://api.groq.com/openai/v1` |
-| `LLM_MODEL` | `openai/gpt-oss-120b` — primary model (open-weight GPT-OSS 120B on Groq) |
+| `LLM_MODEL` | `openai/gpt-oss-120b` — primary model, as set in `.env.example` and the deployment (the code default if unset is `qwen/qwen3.8-27b`). On 28 paraphrased hidden-style notes GPT-OSS 120B scored 28/28; Qwen misplaced AM/PM on 2 |
 | `LLM_FALLBACK_MODELS` | `openai/gpt-oss-20b,qwen/qwen3.8-27b` — real model fallbacks; comma-separated |
 | `LLM_REASONING_EFFORT` | `low` for GPT-OSS; Qwen uses `none` for instruct mode |
 | `LLM_TIMEOUT_SECONDS` | 10 seconds per provider attempt |
 | `LLM_TOTAL_BUDGET_SECONDS` | 20 seconds per extraction invocation, bounded by the shared 23-second interpretation deadline |
-| `LLM2_BASE_URL`, `LLM2_API_KEY`, `LLM2_MODELS` | Optional backup provider (any OpenAI-compatible endpoint), tried after every primary model; all three must be set. `LLM3_*` to `LLM5_*` work the same way. Example: Gemini `https://generativelanguage.googleapis.com/v1beta/openai` with `gemini-3.5-flash-lite` |
 | `PORT` | 8000 for Docker; local Uvicorn uses its `--port` option |
 
 The primary and fallback use the provider's Chat Completions JSON interface. The supplied key was verified against Groq; model availability depends on the account. Rate limits are real operational constraints: the observed account limit was 8,000 tokens per minute per tested model. Model rotation and bounded retries help, but sufficient quota is still needed for repeated hidden tests. The service does not purchase a plan or raise account limits automatically.
 
-The LLM is the primary interpreter of every note. Requests walk an ordered list of targets (provider, key, model). A target that answers HTTP 429 is skipped until its `retry-after` passes, and the request waits for the first free target only while the 23-second interpretation deadline allows. A target that is unreachable or answers another error (5xx, 402, 401) is skipped for 30 seconds, so a provider outage costs one timeout rather than one per request.
-
-If the model is unavailable, or its output still fails the guardrails after one repair attempt, only the affected notes go to the deterministic backup parser in `app/fallback.py`. Its output passes the same guardrails, and anything it cannot validate becomes `no_op`. It never invents a directive type, and a valid request never fails with a 5xx because of a provider outage. Only clean model results are cached, for one hour, keyed by notes and battery capacity. Cache entries are deep-copied to prevent request contamination.
+Every note must be interpreted by a real LLM before a successful plan can be returned. Provider failures and invalid model output produce controlled errors; there is no rule-only successful fallback. `app/fallback.py` remains a legacy helper for standalone regression tests and is not imported by the production interpretation path. Only validated model results are cached, for one hour, keyed by notes and battery capacity. Cache entries are deep-copied to prevent request contamination.
 
 ## Architecture
 
@@ -111,7 +108,7 @@ The service is deployed on Vercel with the native FastAPI entrypoint `app/main.p
 
 1. Import this GitHub repository into Vercel using an account with repository access. Select branch `main`.
 2. Use repository root and the FastAPI framework preset. Keep default build settings; do not configure a frontend output directory or a Uvicorn start command.
-3. Set `LLM_API_KEY` as a secret, `LLM_BASE_URL=https://api.groq.com/openai/v1`, `LLM_MODEL=openai/gpt-oss-120b`, `LLM_FALLBACK_MODELS=openai/gpt-oss-20b,qwen/qwen3.8-27b`, and `LLM_REASONING_EFFORT=low`. Optionally add a backup provider with `LLM2_BASE_URL`, `LLM2_API_KEY` and `LLM2_MODELS`.
+3. Set `LLM_API_KEY` as a secret, `LLM_BASE_URL=https://api.groq.com/openai/v1`, `LLM_MODEL=openai/gpt-oss-120b`, `LLM_FALLBACK_MODELS=openai/gpt-oss-20b,qwen/qwen3.8-27b`, and `LLM_REASONING_EFFORT=low`.
 4. Deploy; ensure the submitted URL permits unauthenticated access to both judging endpoints. Redeploy when environment variables change.
 5. From outside Vercel, check `/health` and run `scripts/run_samples.py https://gridwise-bup-preli.vercel.app`. Require 10/10 and measure latency with fresh notes, not only cache hits.
 
@@ -136,6 +133,6 @@ Submit the public API base URL, event GitHub repository, this README/configurati
 
 Scoring: interpretation 25, constraints 25, optimization 10, API 10, reliability 10, deployment 10, documentation 10. The video is a tie-break, not base points. Local checks cannot guarantee hidden-test scores or qualification.
 
-Malformed input returns 400 (unknown extra fields are ignored; types stay strict), impossible interpreted constraints 422, and an internal or verification failure returns a controlled 500. `GET`/`HEAD /health` returns `{"status":"ok"}` as soon as the process serves requests. Without any configured key the service still answers through the guarded backup parser, but the LLM path is the intended one. There is a 256 KiB request limit, a bounded read deadline, and a 27-second processing deadline. Per-process caching does not survive serverless cold starts or share entries across instances. Adequate provider quota remains necessary.
+Malformed input returns 400, impossible interpreted constraints 422, missing model configuration makes health return 503, and model/internal/verification failure returns a controlled 500. There is a 256 KiB request limit, a bounded read deadline, and a 27-second processing deadline. Per-process caching does not survive serverless cold starts or share entries across instances. Adequate provider quota remains necessary.
 
 Credits: team repository implementation, Codex-assisted review and hardening, BUP supplied challenge/sample pack; FastAPI/Starlette, Pydantic, HTTPX, NumPy/SciPy/HiGHS, Uvicorn, python-dotenv and pytest. Review and understand the logic before presenting it as the team's submission.
