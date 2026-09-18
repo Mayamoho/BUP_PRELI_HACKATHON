@@ -11,7 +11,6 @@ Requires Python 3.12. From a clean machine:
 ```bash
 git clone https://github.com/Mayamoho/BUP_PRELI_HACKATHON.git
 cd BUP_PRELI_HACKATHON
-git switch codex/verified-api-vercel
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-dev.txt
@@ -107,7 +106,7 @@ Production API: **https://gridwise-bup-preli.vercel.app**
 
 The service is deployed on Vercel with the native FastAPI entrypoint `app/main.py`. `.python-version` selects Python 3.12 and `vercel.json` sets a 30-second function duration. `.vercelignore` excludes secrets and development assets. The Groq credential is stored as a private Vercel environment variable and is not present in the source or image.
 
-1. Import this GitHub repository into Vercel using an account with repository access. Select branch `codex/verified-api-vercel` for a review deployment, or the merged production branch later.
+1. Import this GitHub repository into Vercel using an account with repository access. Select branch `main`.
 2. Use repository root and the FastAPI framework preset. Keep default build settings; do not configure a frontend output directory or a Uvicorn start command.
 3. Set `LLM_API_KEY` as a secret, `LLM_BASE_URL=https://api.groq.com/openai/v1`, `LLM_MODEL=qwen/qwen3.8-27b`, `LLM_FALLBACK_MODELS=openai/gpt-oss-120b,openai/gpt-oss-20b`, and `LLM_REASONING_EFFORT=low`.
 4. Deploy; ensure the submitted URL permits unauthenticated access to both judging endpoints. Redeploy when environment variables change.
