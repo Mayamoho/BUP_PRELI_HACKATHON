@@ -5,6 +5,7 @@ Usage: python scripts/run_samples.py [BASE_URL]   (default http://localhost:8000
 from __future__ import annotations
 
 import json
+import math
 import pathlib
 import sys
 import time
@@ -60,7 +61,7 @@ def main() -> int:
         passed += not issues
         print(f"{status} {case['id']} {lat[-1]:.2f}s " + ("; ".join(issues) if issues else f"cost={body['total_cost_bdt']}"))
     lat.sort()
-    print(f"\n{passed}/{len(CASES)} passed; max latency {lat[-1]:.2f}s; p95 {lat[int(0.95 * (len(lat) - 1))]:.2f}s")
+    print(f"\n{passed}/{len(CASES)} passed; max latency {lat[-1]:.2f}s; p95 {lat[math.ceil(0.95 * len(lat)) - 1]:.2f}s")
     return 0 if passed == len(CASES) else 1
 
 

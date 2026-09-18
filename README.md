@@ -1,252 +1,149 @@
-# GridWise LLM: Smart Campus Energy Optimizer
+# GridWise LLM — BUP preliminary
 
-BUP CSE Fest 2026 Hackathon, Online Preliminary.
+A FastAPI service that interprets operator notes using a real generative model, validates each directive, minimizes 24-hour grid cost, and independently verifies the returned schedule.
 
-This is an HTTP API. It reads 1-3 natural-language **operator notes** and turns them into structured directives using an **LLM**. Deterministic **guardrails** check every directive before use. A **linear-programming optimizer** then produces the lowest-cost valid 24-hour grid/solar/battery schedule.
+Required endpoints: `GET /health` and `POST /optimize-energy`. The public judging endpoint and registry image reference must be supplied after deployment. Source stays private during the event according to the organizer's timing rule.
 
-| | |
-|---|---|
-| Health | `GET /health` returns `{"status":"ok"}` |
-| Main | `POST /optimize-energy` |
-| LLM | Groq `openai/gpt-oss-120b` (open-weight model on Groq; OpenAI-compatible Chat Completions, JSON mode, temperature 0, reasoning effort low) |
-| Optimizer | Linear program solved by **HiGHS** through `scipy.optimize.linprog` (exact optimum) |
-| Port | `8000` (override with `PORT`) |
-| Docker image | `docker.io/<DOCKERHUB_USER>/gridwise-llm:1.0.0` |
+## Run locally
 
----
-
-## 1. Architecture
-
-```
-operator_notes ──► LLM (Groq, JSON mode) ──► raw JSON {directive_type, windows, numbers}
-                                                  │
-                                                  ▼
-                        Deterministic guardrails (app/guardrails.py)
-                        • directive_type ∈ 6 allowed values
-                        • note_index mapping: exactly one entry per note, in order
-                        • windows [start,end) expanded to unique ascending hours 0-23 (wraps midnight)
-                        • factor ∈ [0,1] (a percentage is converted), reserve ∈ [0,capacity], grid cap ≥ 0, all finite
-                        • "% of capacity" → kWh computed in code, not by the LLM
-                        • no_op ⇒ applies=false, adjustment=null; otherwise applies=true + exact shape
-                        • on failure: one corrective LLM retry with the validation errors fed back
-                                                  │
-                                                  ▼
-                        Optimizer (app/optimizer.py): LP over 24 h, HiGHS solver
-                                                  │
-                                                  ▼
-                        Final replay (app/replay.py): re-checks every rule and directive on the plan
-                                                  │
-                                                  ▼
-                              JSON response (interpretation + hourly_plan + totals)
-```
-
-**The LLM's role.** The LLM is the primary interpreter of every operator note. It classifies each note as one of `solar_reduction`, `minimum_battery_reserve`, `no_charge_window`, `no_discharge_window`, `max_grid_window` or `no_op`. It also extracts the time window and the numeric value. The LLM returns time *windows* (`[13,15]`), and code expands them to hour lists (`[13,14]`). This keeps the start-inclusive/end-exclusive convention exact.
-
-**Rate limits and model rotation.** Each Groq free-tier model has its own tokens-per-minute budget. On HTTP 429 or a provider error, the request moves to the next model in the chain (`gpt-oss-120b`, then `gpt-oss-20b`). If every model is rate-limited, it waits for `retry-after`, but only while that still fits the 20 s budget. Both models scored 27/27 on the public notes plus a paraphrase stress set.
-
-**Safe failure / backup path.** Two cases trigger the backup path:
-- the LLM provider is unreachable, rate-limited or times out;
-- the LLM output still fails the guardrails after one retry.
-
-In either case only the affected notes go to a deterministic backup parser (`app/fallback.py`). Its output passes through the **same guardrails**. If the backup parser can't produce a valid directive, the note becomes `no_op`. The service never invents a constraint and never crashes. Clean LLM results are cached in memory (LRU), so repeated identical requests are instant.
-
-**Optimizer model** (per hour *h*; all variables ≥ 0):
-
-```
-minimise   Σ tariff[h]·grid[h]  (+1e-6·(charge+discharge) tie-breaker against useless cycling)
-s.t.       grid + solar_used + discharge = demand + charge          (energy balance)
-           E[h] = E[h-1] + charge[h] − discharge[h],  E[-1] = initial (transition)
-           max(base_min, reserve directive) ≤ E[h] ≤ capacity       (bounds + minimum_battery_reserve)
-           charge ≤ max_charge (0 in no_charge_window)
-           discharge ≤ max_discharge (0 in no_discharge_window)
-           solar_used ≤ solar·factor                                 (solar_reduction)
-           grid ≤ max_grid_kwh in listed hours                       (max_grid_window)
-           E[23] = initial                                           (end-of-day neutrality)
-```
-
-Charge and discharge in the same hour are netted into one `battery_action`. Grid is re-derived from the rounded values, so energy balance holds exactly. Totals (`total_grid_kwh`, `total_cost_bdt`, `peak_grid_kwh`) are recomputed from `hourly_plan`. If directives conflict and make the plan infeasible (the organizers say valid cases never do this), reserve and grid-cap violations get a very large penalty instead of failing. If even that is infeasible, the service returns a safe idle-battery plan.
-
-On all 10 public samples the optimizer reaches the **reference optimal cost exactly**.
-
----
-
-## 2. Quickstart (local, from a clean machine)
-
-Requirements: Python 3.11+ and git. Docker is optional.
+Requires Python 3.12. From a clean machine:
 
 ```bash
 git clone https://github.com/Mayamoho/BUP_PRELI_HACKATHON.git
 cd BUP_PRELI_HACKATHON
+git switch codex/verified-api-vercel
 python3 -m venv .venv
-source .venv/bin/activate            # Windows: .venv\Scripts\activate
+source .venv/bin/activate
 pip install -r requirements-dev.txt
-
-cp .env.example .env                 # then put your Groq key in .env (LLM_API_KEY=...)
-set -a; source .env; set +a          # load env vars into the shell
-
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+cp .env.example .env
 ```
 
-Get a free Groq key at <https://console.groq.com/keys>.
-
-### Environment variables
-
-| Name | Required | Default | Meaning |
-|---|---|---|---|
-| `LLM_API_KEY` | yes (for LLM) | none | API key for the OpenAI-compatible LLM provider (Groq). `GROQ_API_KEY` is also accepted. |
-| `LLM_BASE_URL` | no | `https://api.groq.com/openai/v1` | Any OpenAI-compatible endpoint (OpenAI, OpenRouter, a local Ollama/vLLM server). |
-| `LLM_MODEL` | no | `openai/gpt-oss-120b` | Model identifier. |
-| `LLM_FALLBACK_MODELS` | no | `openai/gpt-oss-20b` | Comma-separated backup models tried on rate limit / provider error (each Groq model has its own token budget). |
-| `LLM_TOTAL_BUDGET_SECONDS` | no | `20` | Total time allowed for LLM attempts per request (keeps requests < 30 s). |
-| `LLM_REASONING_EFFORT` | no | `low` | Reasoning effort sent to gpt-oss models; set empty for models that do not accept it. |
-| `LLM_TIMEOUT_SECONDS` | no | `10` | Per-LLM-call timeout. |
-| `PORT` | no | `8000` | HTTP port. |
-| `WEB_CONCURRENCY` | no | `2` | Uvicorn workers (Docker image). |
-| `LOG_LEVEL` | no | `INFO` | Logging level. Logs never include keys or prompts. |
-
-If `LLM_API_KEY` is missing, the service still starts and answers using the backup parser. The LLM is the intended path, so set the key for judging.
-
----
-
-## 3. Test it
-
-### Health
+Put the real `LLM_API_KEY` in `.env`. Do not commit that file. The application loads `.env` automatically.
 
 ```bash
-curl -s http://localhost:8000/health
-# {"status":"ok"}
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-access-log
 ```
 
-### One public sample
+In another terminal:
 
 ```bash
-python -c 'import json;print(json.dumps(json.load(open("samples/public_sample_cases.json"))["cases"][0]["input"]))' > sample01.json
-curl -s -X POST http://localhost:8000/optimize-energy \
-     -H 'Content-Type: application/json' --data @sample01.json | python -m json.tool | head -40
+curl --fail http://127.0.0.1:8000/health
+.venv/bin/python scripts/run_samples.py http://127.0.0.1:8000
 ```
 
-Expected response shape (abridged):
+Require `10/10 passed`. The sample runner compares model interpretation to organizer ground truth, replays the schedule against that ground truth and checks optimal cost. Health checks local model configuration; it does not prove the provider key or quota works.
 
-```json
-{
-  "scenario_id": "SAMPLE-01",
-  "directive_interpretation": [
-    {"note_index": 0, "applies": true, "directive_type": "solar_reduction",
-     "structured_adjustment": {"hours": [12, 13], "factor": 0.25}, "explanation": "..."},
-    {"note_index": 1, "applies": false, "directive_type": "no_op",
-     "structured_adjustment": null, "explanation": "..."}
-  ],
-  "hourly_plan": [
-    {"hour": 0, "grid_kwh": 90.0, "solar_used_kwh": 0.0, "battery_action": "idle",
-     "battery_kwh": 0.0, "battery_energy_after_kwh": 110.0}
-  ],
-  "total_grid_kwh": 2692.5,
-  "total_cost_bdt": 38365.0,
-  "peak_grid_kwh": 175.0,
-  "plan_summary": "..."
-}
-```
-
-(Equivalent optimal schedules may differ hour by hour. The cost equals the reference optimum, 38365.)
-
-### All 10 public samples (end-to-end, through the LLM)
-
-With the server running:
+A full sample request can be extracted without editing JSON:
 
 ```bash
-python scripts/run_samples.py http://localhost:8000
+.venv/bin/python -c 'import json; print(json.dumps(json.load(open("samples/public_sample_cases.json"))["cases"][0]["input"]))' > /tmp/gridwise-sample.json
+curl --fail-with-body http://127.0.0.1:8000/optimize-energy \
+  -H 'Content-Type: application/json' --data-binary @/tmp/gridwise-sample.json
 ```
 
-For each case, the script checks four things:
-1. every directive (type, hours, values) against the reference;
-2. a full replay of the plan against the **reference** directives: energy balance, effective solar, battery bounds/rates/transitions, windows, grid cap, neutrality and totals;
-3. that the cost is ≤ the reference optimal cost;
-4. latency.
+The first sample's optimal cost is 38,365 BDT. Complete reference requests and responses are in `samples/public_sample_cases.json`; equivalent optimal hourly actions are accepted.
 
-Expected: `10/10 passed`.
+## Model and configuration
 
-### Offline unit tests (no API key needed)
+| Variable | Default / purpose |
+|---|---|
+| `LLM_API_KEY` | Required secret; `GROQ_API_KEY` is also accepted |
+| `LLM_BASE_URL` | `https://api.groq.com/openai/v1` |
+| `LLM_MODEL` | `qwen/qwen3.8-27b` — primary model |
+| `LLM_FALLBACK_MODELS` | `openai/gpt-oss-20b` — real model fallback; comma-separated |
+| `LLM_REASONING_EFFORT` | `low` for GPT-OSS; Qwen uses `none` for instruct mode |
+| `LLM_TIMEOUT_SECONDS` | 10 seconds per provider attempt |
+| `LLM_TOTAL_BUDGET_SECONDS` | 20 seconds per extraction invocation, bounded by the shared 23-second interpretation deadline |
+| `PORT` | 8000 for Docker; local Uvicorn uses its `--port` option |
+
+The primary and fallback use the provider's Chat Completions JSON interface. The supplied key was verified against Groq; model availability depends on the account. Rate limits are real operational constraints: the observed account limit was 8,000 tokens per minute per tested model. Model rotation and bounded retries help, but sufficient quota is still needed for repeated hidden tests. The service does not purchase a plan or raise account limits automatically.
+
+Every note must be interpreted by a real LLM before a successful plan can be returned. Provider failures and invalid model output produce controlled errors; there is no rule-only successful fallback. `app/fallback.py` remains a legacy helper for standalone regression tests and is not imported by the production interpretation path. Only validated model results are cached, for one hour, keyed by notes and battery capacity. Cache entries are deep-copied to prevent request contamination.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    A[Scenario JSON] --> B[Strict Pydantic validation]
+    B --> C[LLM extracts type, windows and values]
+    C --> D[Deterministic mapping and numeric guardrails]
+    D --> E[Hard hourly constraints]
+    E --> F[Exact HiGHS linear program]
+    F --> G[Independent schema and schedule replay]
+    G --> H[Valid JSON response]
+```
+
+The LLM returns one entry per note in the original order. Guardrails expand half-open time windows, convert percentage reserves using battery capacity, and construct the exact response adjustment shape. Unsupported types, missing/duplicate note mappings, invalid ranges and invalid factors are rejected. Solar reduced by 80% leaves factor 0.2; 1 PM–3 PM means hours 13 and 14. The model never modifies base demand, tariff or battery parameters.
+
+The optimizer uses 96 continuous variables: grid import `g`, used solar `s`, signed battery charge `q`, and battery energy `e` for each hour. It minimizes only grid cost:
+
+```text
+minimize sum(tariff[h] * g[h])
+g[h] + s[h] - q[h] = demand[h]
+e[h] = e[h-1] + q[h], with e[-1] = initial_energy
+0 <= s[h] <= effective_solar[h]
+0 <= g[h] <= active_grid_cap[h]
+-active_discharge_limit[h] <= q[h] <= active_charge_limit[h]
+active_reserve[h] <= e[h] <= capacity
+e[23] = initial_energy
+```
+
+Positive `q` charges; negative `q` discharges. This prevents simultaneous actions without integer variables and is exact for the challenge's lossless battery model. There are no slack variables, penalty relaxations or idle-plan escape paths. Infeasible constraints return 422. Overlapping reserves use the maximum, grid caps the minimum, and solar factors the tightest fraction of original forecast; ask organizers if they clarify a different overlapping-solar policy.
+
+Independent replay reconstructs directive effects without reusing solver matrices or bound arrays. It checks the response schema, every hour, battery transitions, end neutrality, energy balance, limits and totals. A failed replay returns 500 and never a successful-looking schedule.
+
+## Verification
 
 ```bash
-pytest -q
+.venv/bin/python -m pytest -q
+.venv/bin/python scripts/run_samples.py http://127.0.0.1:8000
 ```
 
-These cover:
-- optimizer optimality on all samples;
-- guardrail rejection of bad LLM output;
-- the backup parser, including the paraphrase examples from Problem Statement §11.4;
-- malformed-request handling (400);
-- the end-to-end API with the LLM unavailable.
+The automated suite covers all ten public optimum costs, 100 random integer instances checked against an independent exhaustive dynamic program, fractional values, invalid directives, infeasible constraints, corrupted schedules, invalid requests, note mappings and model failure behavior. Offline/API mock tests do not prove live language understanding. See [verification report](docs/VERIFICATION.md) for the checks actually run on this branch.
 
----
+## Vercel deployment
 
-## 4. Docker fallback
+The selected target is Vercel. The native FastAPI entrypoint is `app/main.py`; `.python-version` selects Python 3.12 and `vercel.json` sets a 30-second function duration. `.vercelignore` excludes secrets and development assets.
+
+1. Import this GitHub repository into Vercel using an account with repository access. Select branch `codex/verified-api-vercel` for a review deployment, or the merged production branch later.
+2. Use repository root and the FastAPI framework preset. Keep default build settings; do not configure a frontend output directory or a Uvicorn start command.
+3. Set `LLM_API_KEY` as a secret, `LLM_BASE_URL=https://api.groq.com/openai/v1`, `LLM_MODEL=qwen/qwen3.8-27b`, `LLM_FALLBACK_MODELS=openai/gpt-oss-20b`, and `LLM_REASONING_EFFORT=low`.
+4. Deploy; ensure the submitted URL permits unauthenticated access to both judging endpoints. Redeploy when environment variables change.
+5. From outside Vercel, check `/health` and run `scripts/run_samples.py https://YOUR_PROJECT.vercel.app`. Require 10/10 and measure latency with fresh notes, not only cache hits.
+
+Vercel deployment is not yet verified merely because configuration exists. Dependency installation, ASGI lifespan, solver behavior, cold-start latency and external provider connectivity must be tested on the actual deployment. Official guide: https://vercel.com/docs/frameworks/backend/fastapi
+
+## Docker fallback
 
 ```bash
-docker pull docker.io/<DOCKERHUB_USER>/gridwise-llm:1.0.0
-docker run --rm -p 8000:8000 -e LLM_API_KEY=<your_groq_key> docker.io/<DOCKERHUB_USER>/gridwise-llm:1.0.0
-curl -s http://localhost:8000/health        # {"status":"ok"}
+docker build -t gridwise-team:1.1.0 .
+docker run --rm -p 8000:8000 --env-file .env gridwise-team:1.1.0
 ```
 
-- The container binds `0.0.0.0:8000` and runs as a non-root user.
-- **No secrets are baked into the image**; the key is only passed at runtime.
-- Build it yourself: `docker build -t gridwise-llm:1.0.0 .`
+The image runs as a non-root user, binds `0.0.0.0`, exposes port 8000 and has an HTTP health check. No credentials or sample answer pack are baked into it. The primary API may run on Vercel; the independently pullable fallback image is still required by the rubric.
 
----
+After logging into your registry, replace `YOUR_DOCKERHUB_USER`:
 
-## 5. API contract summary
-
-- `GET /health` returns `200 {"status":"ok"}`.
-- `POST /optimize-energy` returns `200` with `scenario_id`, `directive_interpretation`, `hourly_plan` (24 entries), `total_grid_kwh`, `total_cost_bdt`, `peak_grid_kwh` and `plan_summary`.
-- `400 {"error": "..."}` means malformed JSON or a structurally invalid request, for example:
-  - missing fields;
-  - not exactly 24 hours, or duplicate hours;
-  - 0 or more than 3 notes, or empty notes;
-  - non-numeric values.
-- `422 {"error": "..."}` means the request is well-formed but semantically invalid: negative energy values, or initial energy outside [minimum, capacity].
-- `500 {"error":"internal error"}` is a controlled error. It never includes a stack trace or secrets.
-
-Numbers are rounded to 4 decimals. That is far below the 0.01 judge tolerance.
-
----
-
-## 6. Project layout
-
-```
-app/main.py         FastAPI app, request validation, error handling, response assembly
-app/llm.py          LLM client + system prompt (Groq / any OpenAI-compatible endpoint)
-app/guardrails.py   Deterministic validation & normalisation of LLM output
-app/interpreter.py  LLM → guardrails → retry → backup parser pipeline, LRU cache
-app/fallback.py     Deterministic backup parser (only when the LLM fails)
-app/optimizer.py    LP model + HiGHS solve + plan assembly
-app/replay.py       Independent judge-style replay validator
-scripts/run_samples.py  End-to-end public sample checker
-tests/              pytest suite
-samples/            Public sample cases (organizer-provided)
+```bash
+docker tag gridwise-team:1.1.0 YOUR_DOCKERHUB_USER/gridwise:1.1.0
+docker push YOUR_DOCKERHUB_USER/gridwise:1.1.0
 ```
 
----
+The organizer's fallback commands are:
 
-## 7. Dependencies & credits
+```bash
+docker pull YOUR_DOCKERHUB_USER/gridwise:1.1.0
+docker run --rm -p 8000:8000 --env-file .env YOUR_DOCKERHUB_USER/gridwise:1.1.0
+```
 
-- [FastAPI](https://fastapi.tiangolo.com/) + [Uvicorn](https://www.uvicorn.org/): HTTP server
-- [SciPy](https://scipy.org/) `linprog` with the [HiGHS](https://highs.dev/) solver, plus NumPy: optimization
-- [httpx](https://www.python-httpx.org/): LLM HTTP client
-- [Groq](https://groq.com/) hosting OpenAI **gpt-oss-120b** (open-weight): operator-note interpretation
-- pytest: tests
-- AI coding assistant (Claude Code) was used during development, as the rulebook permits.
+Submit the real image tag or digest and keep it accessible throughout evaluation. A local image name is insufficient. The hosting URL, registry account and final video link are not created automatically by this code.
 
-## 8. Known limitations
+## Submission and limitations
 
-- **Groq free-tier rate limits** (8k tokens/min per model). A sustained burst can still exhaust both models. Those requests fall back to the deterministic parser, which covers common phrasings but is less robust than the LLM. Responses stay valid.
-- **Ambiguous times.** Times without AM/PM are resolved from context: solar or maintenance work means daytime. Truly ambiguous notes may be misread.
-- **One directive per note.** Each note maps to exactly one directive, as the Problem Statement specifies. A note that mentions two rules is reduced to the dominant one.
-- **Slack penalty on conflicts.** If a request contains contradictory hard directives, the reserve and grid-cap limits are softened with a large penalty instead of failing. The organizers state that valid scoring cases are feasible.
-- **Per-process cache.** The cache is in memory and per process, so it resets on restart.
+Submit the public API base URL, event GitHub repository, this README/configuration, an exact pullable image reference, and a video of at most three minutes. A narration script is in `docs/VIDEO_SCRIPT.md`; update its test/deployment statements to match this branch's evidence before recording. Keep the repository private during the event and follow organizer instructions for post-deadline publication.
 
-## 9. Secret handling
+Scoring: interpretation 25, constraints 25, optimization 10, API 10, reliability 10, deployment 10, documentation 10. The video is a tie-break, not base points. Local checks cannot guarantee hidden-test scores or qualification.
 
-- Keys are read only from environment variables.
-- `.env` is git-ignored and docker-ignored; only `.env.example` (with no values) is committed.
-- Logs contain scenario id, interpretation source, timings and cost. They never contain keys, prompts or stack traces.
-- Error responses are generic.
+Malformed input returns 400, impossible interpreted constraints 422, missing model configuration makes health return 503, and model/internal/verification failure returns a controlled 500. There is a 256 KiB request limit, a bounded read deadline, and a 27-second processing deadline. Per-process caching does not survive serverless cold starts or share entries across instances. Adequate provider quota remains necessary.
+
+Credits: team repository implementation, Codex-assisted review and hardening, BUP supplied challenge/sample pack; FastAPI/Starlette, Pydantic, HTTPX, NumPy/SciPy/HiGHS, Uvicorn, python-dotenv and pytest. Review and understand the logic before presenting it as the team's submission.

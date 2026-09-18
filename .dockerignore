@@ -1,7 +1,7 @@
-.venv
-.git
-.env
-.env.*
-__pycache__
-.pytest_cache
-tests
+*
+!app/
+!app/**
+!requirements.txt
+!Dockerfile
+**/__pycache__/
+**/*.pyc
