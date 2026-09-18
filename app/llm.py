@@ -2,12 +2,17 @@
 
 Works with Groq (default), OpenAI, Gemini's OpenAI endpoint, OpenRouter, or a local
 OpenAI-compatible server (Ollama / vLLM). Configure with LLM_API_KEY, LLM_BASE_URL, LLM_MODEL.
+
+LLM_API_KEY may hold several comma-separated keys. Every (key, model) pair has its own provider
+rate-limit budget, so requests rotate across pairs and skip a pair while it is cooling down after
+a 429.
 """
 from __future__ import annotations
 
 import json
 import os
 import re
+import threading
 import time
 
 import httpx
@@ -52,10 +57,10 @@ class LLMError(RuntimeError):
 
 def _config() -> dict:
     primary = os.getenv("LLM_MODEL", "openai/gpt-oss-120b")
-    backups = os.getenv("LLM_FALLBACK_MODELS", "openai/gpt-oss-20b")
+    backups = os.getenv("LLM_FALLBACK_MODELS", "openai/gpt-oss-20b,qwen/qwen3.8-27b")
     models = [primary] + [m.strip() for m in backups.split(",") if m.strip() and m.strip() != primary]
     return {
-        "api_key": os.getenv("LLM_API_KEY") or os.getenv("GROQ_API_KEY") or "",
+        "api_keys": [k.strip() for k in (os.getenv("LLM_API_KEY") or os.getenv("GROQ_API_KEY") or "").split(",") if k.strip()],
         "base_url": os.getenv("LLM_BASE_URL", "https://api.groq.com/openai/v1").rstrip("/"),
         "models": models,
         "timeout": float(os.getenv("LLM_TIMEOUT_SECONDS", "10")),
@@ -65,7 +70,7 @@ def _config() -> dict:
 
 
 def llm_configured() -> bool:
-    return bool(_config()["api_key"])
+    return bool(_config()["api_keys"])
 
 
 def model_name() -> str:
@@ -100,7 +105,7 @@ def _retry_after(r: httpx.Response) -> float:
         return 2.0
 
 
-def _call_model(cfg: dict, model: str, messages: list[dict], timeout: float) -> list[dict]:
+def _call_model(cfg: dict, api_key: str, model: str, messages: list[dict], timeout: float) -> list[dict]:
     body = {
         "model": model,
         "messages": messages,
@@ -111,7 +116,7 @@ def _call_model(cfg: dict, model: str, messages: list[dict], timeout: float) -> 
     }
     r = httpx.post(
         f"{cfg['base_url']}/chat/completions",
-        headers={"Authorization": f"Bearer {cfg['api_key']}"},
+        headers={"Authorization": f"Bearer {api_key}"},
         json=body,
         timeout=timeout,
     )
@@ -136,12 +141,22 @@ class RateLimited(LLMError):
         self.retry_after = retry_after
 
 
+# (key position, model) -> monotonic time until which the pair is known to be rate limited
+_COOLDOWN: dict[tuple[int, str], float] = {}
+_COOLDOWN_LOCK = threading.Lock()
+
+
+def _cooling(pair: tuple[int, str]) -> float:
+    with _COOLDOWN_LOCK:
+        return max(0.0, _COOLDOWN.get(pair, 0.0) - time.monotonic())
+
+
 def interpret_notes_llm(notes: list[str], capacity: float, feedback: str | None = None) -> list[dict]:
-    """Interpret all notes in one LLM call. Rotates through the configured models on rate limits /
-    provider errors (each Groq model has its own token budget) within a total time budget.
+    """Interpret all notes in one LLM call. Rotates through the configured (key, model) pairs on
+    rate limits / provider errors (each pair has its own token budget) within a total time budget.
     Returns raw (unvalidated) interpretation dicts."""
     cfg = _config()
-    if not cfg["api_key"]:
+    if not cfg["api_keys"]:
         raise LLMError("LLM_API_KEY not configured")
     user = {
         "battery_capacity_kwh": capacity,
@@ -156,27 +171,36 @@ def interpret_notes_llm(notes: list[str], capacity: float, feedback: str | None 
             {"role": "user", "content": f"Your previous answer failed validation: {feedback}. Return corrected JSON."}
         )
 
+    # model-major order: the strongest model is tried on every key before falling back
+    pairs = [(k, m) for m in cfg["models"] for k in range(len(cfg["api_keys"]))]
     deadline = time.monotonic() + cfg["budget"]
     last: LLMError = LLMError("no model attempted")
     for _round in range(3):
-        waits = []
-        for model in cfg["models"]:
+        limited = False
+        for pair in pairs:
+            if _cooling(pair) > 0:
+                limited = True
+                last = RateLimited(_cooling(pair))
+                continue
             remaining = deadline - time.monotonic()
             if remaining < 1.5:
                 raise last
+            key_pos, model = pair
             try:
-                return _call_model(cfg, model, messages, min(cfg["timeout"], remaining))
+                return _call_model(cfg, cfg["api_keys"][key_pos], model, messages, min(cfg["timeout"], remaining))
             except RateLimited as exc:
-                waits.append(exc.retry_after)
+                with _COOLDOWN_LOCK:
+                    _COOLDOWN[pair] = time.monotonic() + exc.retry_after
+                limited = True
                 last = exc
             except httpx.HTTPError as exc:
                 last = LLMError(f"provider unreachable ({type(exc).__name__})")
             except LLMError as exc:
                 last = exc
-        if not waits:
+        if not limited:
             break
-        pause = min(waits)
+        pause = min(_cooling(p) for p in pairs)
         if time.monotonic() + pause + 2 > deadline:
             break
-        time.sleep(pause)
+        time.sleep(max(pause, 0.2))
     raise last

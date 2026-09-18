@@ -43,7 +43,7 @@ operator_notes ──► LLM (Groq, JSON mode) ──► raw JSON {directive_typ
 
 **The LLM's role.** The LLM is the primary interpreter of every operator note. It classifies each note as one of `solar_reduction`, `minimum_battery_reserve`, `no_charge_window`, `no_discharge_window`, `max_grid_window` or `no_op`. It also extracts the time window and the numeric value. The LLM returns time *windows* (`[13,15]`), and code expands them to hour lists (`[13,14]`). This keeps the start-inclusive/end-exclusive convention exact.
 
-**Rate limits and model rotation.** Each Groq free-tier model has its own tokens-per-minute budget. On HTTP 429 or a provider error, the request moves to the next model in the chain (`gpt-oss-120b`, then `gpt-oss-20b`). If every model is rate-limited, it waits for `retry-after`, but only while that still fits the 20 s budget. Both models scored 27/27 on the public notes plus a paraphrase stress set.
+**Rate limits and key/model rotation.** On Groq, every (API key, model) pair has its own tokens-per-minute budget. A request tries the pairs in order (`gpt-oss-120b` on every key, then `gpt-oss-20b`, then `qwen/qwen3.8-27b`). A pair that returns HTTP 429 is skipped until its `retry-after` has passed, so later requests go straight to a pair with budget left. If every pair is cooling down, the request waits for the first one to free up, but only while that still fits the 20 s budget. `LLM_API_KEY` accepts several comma-separated keys to multiply throughput. On a 28-note paraphrase stress set (all five directive types plus distractors) sent 4 at a time, the service scored 28/28 with p95 latency 1.45 s.
 
 **Safe failure / backup path.** Two cases trigger the backup path:
 - the LLM provider is unreachable, rate-limited or times out;
@@ -94,10 +94,10 @@ Get a free Groq key at <https://console.groq.com/keys>.
 
 | Name | Required | Default | Meaning |
 |---|---|---|---|
-| `LLM_API_KEY` | yes (for LLM) | none | API key for the OpenAI-compatible LLM provider (Groq). `GROQ_API_KEY` is also accepted. |
+| `LLM_API_KEY` | yes (for LLM) | none | API key for the OpenAI-compatible LLM provider (Groq). Several keys may be given comma-separated (`key1,key2`) to multiply rate-limit budget. `GROQ_API_KEY` is also accepted. |
 | `LLM_BASE_URL` | no | `https://api.groq.com/openai/v1` | Any OpenAI-compatible endpoint (OpenAI, OpenRouter, a local Ollama/vLLM server). |
 | `LLM_MODEL` | no | `openai/gpt-oss-120b` | Model identifier. |
-| `LLM_FALLBACK_MODELS` | no | `openai/gpt-oss-20b` | Comma-separated backup models tried on rate limit / provider error (each Groq model has its own token budget). |
+| `LLM_FALLBACK_MODELS` | no | `openai/gpt-oss-20b,qwen/qwen3.8-27b` | Comma-separated backup models tried on rate limit / provider error (each Groq model has its own token budget). |
 | `LLM_TOTAL_BUDGET_SECONDS` | no | `20` | Total time allowed for LLM attempts per request (keeps requests < 30 s). |
 | `LLM_REASONING_EFFORT` | no | `low` | Reasoning effort sent to gpt-oss models; set empty for models that do not accept it. |
 | `LLM_TIMEOUT_SECONDS` | no | `10` | Per-LLM-call timeout. |
@@ -249,7 +249,7 @@ samples/            Public sample cases (organizer-provided)
 
 ## 8. Known limitations
 
-- **Groq free-tier rate limits** (8k tokens/min per model). A sustained burst can still exhaust both models. Those requests fall back to the deterministic parser, which covers common phrasings but is less robust than the LLM. Responses stay valid.
+- **Groq free-tier rate limits** (about 8k tokens/min per key and model; one request uses about 1.4k tokens). A sustained burst can still exhaust every key/model pair. Those requests fall back to the deterministic parser, which covers common phrasings but is less robust than the LLM. Responses stay valid.
 - **Ambiguous times.** Times without AM/PM are resolved from context: solar or maintenance work means daytime. Truly ambiguous notes may be misread.
 - **One directive per note.** Each note maps to exactly one directive, as the Problem Statement specifies. A note that mentions two rules is reduced to the dominant one.
 - **Slack penalty on conflicts.** If a request contains contradictory hard directives, the reserve and grid-cap limits are softened with a large penalty instead of failing. The organizers state that valid scoring cases are feasible.
