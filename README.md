@@ -6,6 +6,7 @@ This is an HTTP API. It reads 1-3 natural-language **operator notes** and turns 
 
 | | |
 |---|---|
+| Live API | https://bup-preli-hackathon.onrender.com (Render) |
 | Health | `GET /health` returns `{"status":"ok"}` |
 | Main | `POST /optimize-energy` |
 | LLM | Groq `openai/gpt-oss-120b` (open-weight model on Groq; OpenAI-compatible Chat Completions, JSON mode, temperature 0, reasoning effort low) |
@@ -110,7 +111,17 @@ If `LLM_API_KEY` is missing, the service still starts and answers using the back
 
 ## 3. Test it
 
-### Health
+### Deployed instance
+
+```bash
+curl -s https://bup-preli-hackathon.onrender.com/health
+# {"status":"ok"}
+python scripts/run_samples.py https://bup-preli-hackathon.onrender.com
+```
+
+Free Render instances sleep when idle; the first request after a pause can take ~50 s.
+
+### Health (local)
 
 ```bash
 curl -s http://localhost:8000/health
