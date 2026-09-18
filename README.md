@@ -128,6 +128,8 @@ docker run --rm -p 8000:8000 --env-file .env docker.io/kawser81/gridwise-llm:1.2
 curl --fail http://127.0.0.1:8000/health   # {"status":"ok"}
 ```
 
+If `kawser81/gridwise-llm:1.2.0` cannot be pulled, the team's earlier public build `docker.io/amininrohul/gridwise:1.1.0` (same API and strict LLM path; Qwen default, no `LLM2_*` backup) runs with the same command.
+
 The image is built from this repository's `Dockerfile` at the final commit. It runs as a non-root user, binds `0.0.0.0`, exposes port 8000 and has an HTTP health check. No credentials or sample answer pack are baked into it; keys are passed only at runtime. `/health` returns 503 until an LLM key is configured, because every interpretation requires a language model.
 
 ## Submission and limitations
