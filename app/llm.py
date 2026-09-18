@@ -57,8 +57,8 @@ def _split(v: str | None) -> list[str]:
 def _config() -> dict:
     """Targets are (base_url, api_key, model) triples tried in order: every primary model on every
     primary key, then backup providers LLM2_*, LLM3_*, ... (each an OpenAI-compatible endpoint)."""
-    primary = os.getenv("LLM_MODEL", "qwen/qwen3.8-27b")
-    backups = os.getenv("LLM_FALLBACK_MODELS", "openai/gpt-oss-120b,openai/gpt-oss-20b")
+    primary = os.getenv("LLM_MODEL", "openai/gpt-oss-120b")
+    backups = os.getenv("LLM_FALLBACK_MODELS", "openai/gpt-oss-20b,qwen/qwen3.8-27b")
     models = [primary] + [m for m in _split(backups) if m != primary]
     base = os.getenv("LLM_BASE_URL", "https://api.groq.com/openai/v1").rstrip("/")
     keys = _split(os.getenv("LLM_API_KEY") or os.getenv("GROQ_API_KEY"))
