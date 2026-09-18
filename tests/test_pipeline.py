@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from app import llm
 from app.fallback import interpret_note_fallback
 from app.guardrails import GuardrailError, validate_entry
-from app.main import app
+from app.main import app, validate_request
 from app.optimizer import optimize
 from app.replay import replay
 
@@ -85,10 +85,16 @@ def test_malformed_requests(client):
 def test_end_to_end_without_llm(monkeypatch, client):
     monkeypatch.setenv("LLM_API_KEY", "")
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    allowed = {"solar_reduction", "minimum_battery_reserve", "no_charge_window", "no_discharge_window",
+               "max_grid_window", "no_op"}
     for case in CASES:
         r = client.post("/optimize-energy", json=case["input"])
-        assert r.status_code == 500
-        assert "hourly_plan" not in r.json()
+        assert r.status_code == 200  # provider outage degrades to the guarded backup, never a 5xx
+        body = r.json()
+        assert len(body["hourly_plan"]) == 24
+        assert [e["note_index"] for e in body["directive_interpretation"]] == list(range(len(case["input"]["operator_notes"])))
+        assert all(e["directive_type"] in allowed for e in body["directive_interpretation"])
+        assert not replay(validate_request(case["input"]), body)
 
 
 def test_llm_bad_output_is_contained(monkeypatch, client):
@@ -97,5 +103,6 @@ def test_llm_bad_output_is_contained(monkeypatch, client):
                         lambda notes, cap, feedback=None, **kwargs: [{"note_index": 0, "directive_type": "delete_campus"}])
     case = CASES[1]
     r = client.post("/optimize-energy", json=dict(case["input"], scenario_id="LLM-BAD"))
-    assert r.status_code == 500
+    assert r.status_code == 200
     assert "delete_campus" not in r.text
+    assert not replay(validate_request(dict(case["input"], scenario_id="LLM-BAD")), r.json())
