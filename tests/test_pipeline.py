@@ -87,7 +87,7 @@ def test_end_to_end_without_llm(monkeypatch):
 
 def test_llm_bad_output_is_contained(monkeypatch):
     monkeypatch.setattr("app.interpreter.interpret_notes_llm",
-                        lambda notes, cap, feedback=None: [{"note_index": 0, "directive_type": "delete_campus"}])
+                        lambda notes, cap, feedback=None, budget=None: [{"note_index": 0, "directive_type": "delete_campus"}])
     case = CASES[1]
     r = client.post("/optimize-energy", json=dict(case["input"], scenario_id="LLM-BAD"))
     assert r.status_code == 200

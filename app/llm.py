@@ -1,11 +1,11 @@
 """LLM client: interprets operator notes into raw directive JSON (OpenAI-compatible Chat Completions).
 
-Works with Groq (default), OpenAI, Gemini's OpenAI endpoint, OpenRouter, or a local
+Works with Groq (default), Cerebras, Gemini's OpenAI endpoint, OpenAI, OpenRouter, or a local
 OpenAI-compatible server (Ollama / vLLM). Configure with LLM_API_KEY, LLM_BASE_URL, LLM_MODEL.
+Backup providers: LLM2_BASE_URL / LLM2_API_KEY / LLM2_MODELS (and LLM3_*, ...).
 
-LLM_API_KEY may hold several comma-separated keys. Every (key, model) pair has its own provider
-rate-limit budget, so requests rotate across pairs and skip a pair while it is cooling down after
-a 429.
+Requests rotate across (provider, key, model) targets and skip a target while it is cooling down
+after a 429.
 """
 from __future__ import annotations
 
@@ -55,14 +55,25 @@ class LLMError(RuntimeError):
     pass
 
 
+def _split(v: str | None) -> list[str]:
+    return [x.strip() for x in (v or "").split(",") if x.strip()]
+
+
 def _config() -> dict:
+    """Targets are (base_url, api_key, model) triples tried in order. The primary provider comes
+    first (every model on every key); backup providers LLM2_*, LLM3_*, ... follow."""
     primary = os.getenv("LLM_MODEL", "openai/gpt-oss-120b")
     backups = os.getenv("LLM_FALLBACK_MODELS", "openai/gpt-oss-20b,qwen/qwen3.8-27b")
-    models = [primary] + [m.strip() for m in backups.split(",") if m.strip() and m.strip() != primary]
+    models = [primary] + [m for m in _split(backups) if m != primary]
+    base = os.getenv("LLM_BASE_URL", "https://api.groq.com/openai/v1").rstrip("/")
+    keys = _split(os.getenv("LLM_API_KEY") or os.getenv("GROQ_API_KEY"))
+    targets = [(base, k, m) for m in models for k in keys]
+    for n in range(2, 6):
+        url, pkeys, pmodels = (os.getenv(f"LLM{n}_{v}") for v in ("BASE_URL", "API_KEY", "MODELS"))
+        if url and pkeys and pmodels:
+            targets += [(url.rstrip("/"), k, m) for m in _split(pmodels) for k in _split(pkeys)]
     return {
-        "api_keys": [k.strip() for k in (os.getenv("LLM_API_KEY") or os.getenv("GROQ_API_KEY") or "").split(",") if k.strip()],
-        "base_url": os.getenv("LLM_BASE_URL", "https://api.groq.com/openai/v1").rstrip("/"),
-        "models": models,
+        "targets": targets,
         "timeout": float(os.getenv("LLM_TIMEOUT_SECONDS", "10")),
         "budget": float(os.getenv("LLM_TOTAL_BUDGET_SECONDS", "20")),
         "reasoning_effort": os.getenv("LLM_REASONING_EFFORT", "low"),
@@ -70,11 +81,11 @@ def _config() -> dict:
 
 
 def llm_configured() -> bool:
-    return bool(_config()["api_keys"])
+    return bool(_config()["targets"])
 
 
 def model_name() -> str:
-    return ",".join(_config()["models"])
+    return ",".join(dict.fromkeys(m for _, _, m in _config()["targets"]))
 
 
 def _extract_json(text: str) -> dict:
@@ -91,7 +102,7 @@ def _extract_json(text: str) -> dict:
 def _reasoning_param(model: str, effort: str) -> dict:
     if not effort:
         return {}
-    if model.startswith("openai/gpt-oss"):
+    if "gpt-oss" in model:
         return {"reasoning_effort": effort}
     if model.startswith("qwen/"):
         return {"reasoning_effort": "none"}  # answer directly; keeps latency and token use low
@@ -105,7 +116,8 @@ def _retry_after(r: httpx.Response) -> float:
         return 2.0
 
 
-def _call_model(cfg: dict, api_key: str, model: str, messages: list[dict], timeout: float) -> list[dict]:
+def _call_model(cfg: dict, target: tuple[str, str, str], messages: list[dict], timeout: float) -> list[dict]:
+    base_url, api_key, model = target
     body = {
         "model": model,
         "messages": messages,
@@ -115,7 +127,7 @@ def _call_model(cfg: dict, api_key: str, model: str, messages: list[dict], timeo
         **_reasoning_param(model, cfg["reasoning_effort"]),
     }
     r = httpx.post(
-        f"{cfg['base_url']}/chat/completions",
+        f"{base_url}/chat/completions",
         headers={"Authorization": f"Bearer {api_key}"},
         json=body,
         timeout=timeout,
@@ -141,22 +153,33 @@ class RateLimited(LLMError):
         self.retry_after = retry_after
 
 
-# (key position, model) -> monotonic time until which the pair is known to be rate limited
-_COOLDOWN: dict[tuple[int, str], float] = {}
+# target -> (monotonic time until which it is skipped, rate_limited). Rate-limited targets are
+# worth waiting for; failing targets (unreachable, 5xx, bad output) are just skipped for a while
+# so a dead provider does not cost every request a full timeout.
+_COOLDOWN: dict[tuple[str, str, str], tuple[float, bool]] = {}
 _COOLDOWN_LOCK = threading.Lock()
+ERROR_COOLDOWN_SECONDS = 30.0
 
 
-def _cooling(pair: tuple[int, str]) -> float:
+def _cooling(pair: tuple[str, str, str]) -> tuple[float, bool]:
     with _COOLDOWN_LOCK:
-        return max(0.0, _COOLDOWN.get(pair, 0.0) - time.monotonic())
+        until, limited = _COOLDOWN.get(pair, (0.0, False))
+    return max(0.0, until - time.monotonic()), limited
 
 
-def interpret_notes_llm(notes: list[str], capacity: float, feedback: str | None = None) -> list[dict]:
+def _cool(pair: tuple[str, str, str], seconds: float, limited: bool) -> None:
+    with _COOLDOWN_LOCK:
+        _COOLDOWN[pair] = (time.monotonic() + seconds, limited)
+
+
+def interpret_notes_llm(
+    notes: list[str], capacity: float, feedback: str | None = None, budget: float | None = None
+) -> list[dict]:
     """Interpret all notes in one LLM call. Rotates through the configured (key, model) pairs on
-    rate limits / provider errors (each pair has its own token budget) within a total time budget.
+    rate limits / provider errors (each target has its own token budget) within a total time budget.
     Returns raw (unvalidated) interpretation dicts."""
     cfg = _config()
-    if not cfg["api_keys"]:
+    if not cfg["targets"]:
         raise LLMError("LLM_API_KEY not configured")
     user = {
         "battery_capacity_kwh": capacity,
@@ -171,35 +194,38 @@ def interpret_notes_llm(notes: list[str], capacity: float, feedback: str | None 
             {"role": "user", "content": f"Your previous answer failed validation: {feedback}. Return corrected JSON."}
         )
 
-    # model-major order: the strongest model is tried on every key before falling back
-    pairs = [(k, m) for m in cfg["models"] for k in range(len(cfg["api_keys"]))]
-    deadline = time.monotonic() + cfg["budget"]
+    pairs = cfg["targets"]
+    deadline = time.monotonic() + min(cfg["budget"], budget if budget is not None else cfg["budget"])
     last: LLMError = LLMError("no model attempted")
     for _round in range(3):
         limited = False
         for pair in pairs:
-            if _cooling(pair) > 0:
-                limited = True
-                last = RateLimited(_cooling(pair))
+            wait, was_limited = _cooling(pair)
+            if wait > 0:
+                if was_limited:
+                    limited = True
+                    last = RateLimited(wait)
                 continue
             remaining = deadline - time.monotonic()
             if remaining < 1.5:
                 raise last
-            key_pos, model = pair
             try:
-                return _call_model(cfg, cfg["api_keys"][key_pos], model, messages, min(cfg["timeout"], remaining))
+                return _call_model(cfg, pair, messages, min(cfg["timeout"], remaining))
             except RateLimited as exc:
-                with _COOLDOWN_LOCK:
-                    _COOLDOWN[pair] = time.monotonic() + exc.retry_after
+                _cool(pair, exc.retry_after, True)
                 limited = True
                 last = exc
             except httpx.HTTPError as exc:
+                _cool(pair, ERROR_COOLDOWN_SECONDS, False)
                 last = LLMError(f"provider unreachable ({type(exc).__name__})")
             except LLMError as exc:
+                if str(exc).startswith("provider HTTP"):
+                    _cool(pair, ERROR_COOLDOWN_SECONDS, False)
                 last = exc
         if not limited:
             break
-        pause = min(_cooling(p) for p in pairs)
+        waits = [w for w, lim in map(_cooling, pairs) if lim and w > 0]
+        pause = min(waits) if waits else 0.2
         if time.monotonic() + pause + 2 > deadline:
             break
         time.sleep(max(pause, 0.2))

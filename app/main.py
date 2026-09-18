@@ -63,7 +63,7 @@ def validate_request(body) -> dict:
         raise RequestError(400, "operator_notes must be an array of 1-3 strings")
     if not all(isinstance(n, str) and n.strip() for n in notes):
         raise RequestError(400, "operator_notes entries must be non-empty strings")
-    notes = [n.strip()[:2000] for n in notes]
+    notes = [n.strip()[:8000] for n in notes]
 
     hours = body["hours"]
     if not isinstance(hours, list) or len(hours) != H:
