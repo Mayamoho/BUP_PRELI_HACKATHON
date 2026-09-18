@@ -12,7 +12,7 @@ This is an HTTP API. It reads 1-3 natural-language **operator notes** and turns 
 | LLM | Groq `openai/gpt-oss-120b` (open-weight model on Groq; OpenAI-compatible Chat Completions, JSON mode, temperature 0, reasoning effort low) |
 | Optimizer | Linear program solved by **HiGHS** through `scipy.optimize.linprog` (exact optimum) |
 | Port | `8000` (override with `PORT`) |
-| Docker image | `docker.io/<DOCKERHUB_USER>/gridwise-llm:1.0.0` |
+| Docker image | `docker.io/kawser81/gridwise-llm:1.0.0` |
 
 ---
 
@@ -43,7 +43,12 @@ operator_notes ──► LLM (Groq, JSON mode) ──► raw JSON {directive_typ
 
 **The LLM's role.** The LLM is the primary interpreter of every operator note. It classifies each note as one of `solar_reduction`, `minimum_battery_reserve`, `no_charge_window`, `no_discharge_window`, `max_grid_window` or `no_op`. It also extracts the time window and the numeric value. The LLM returns time *windows* (`[13,15]`), and code expands them to hour lists (`[13,14]`). This keeps the start-inclusive/end-exclusive convention exact.
 
-**Rate limits and key/model rotation.** On Groq, every (API key, model) pair has its own tokens-per-minute budget. A request tries the pairs in order (`gpt-oss-120b` on every key, then `gpt-oss-20b`, then `qwen/qwen3.8-27b`). A pair that returns HTTP 429 is skipped until its `retry-after` has passed, so later requests go straight to a pair with budget left. If every pair is cooling down, the request waits for the first one to free up, but only while that still fits the 20 s budget. `LLM_API_KEY` accepts several comma-separated keys to multiply throughput. On a 28-note paraphrase stress set (all five directive types plus distractors) sent 4 at a time, the service scored 28/28 with p95 latency 1.45 s.
+**Rate limits, rotation and circuit breaker.** Each request walks an ordered list of targets (provider, key, model): the primary provider's models first (`gpt-oss-120b`, `gpt-oss-20b`, `qwen/qwen3.8-27b` on Groq), then any backup providers configured with `LLM2_*` / `LLM3_*` (for example Cerebras or Gemini, both OpenAI-compatible). Note that Groq rate limits apply per account, so extra keys only help if they come from different accounts.
+- A target that returns HTTP 429 is skipped until its `retry-after` has passed. If every target is rate-limited, the request waits for the first to free up.
+- A target that is unreachable or returns 5xx is skipped for 30 s, so a provider outage costs one timeout, not one per request.
+- The whole LLM stage (including the corrective retry) shares one 22 s budget per request, so a response always arrives inside the judge's 30 s limit.
+
+On a 28-note paraphrase stress set (all five directive types plus distractors, MW/MWh units, "half full", "one-fifth", midnight wrap) the service scored 28/28, with p95 latency 1.45 s at 4 concurrent requests.
 
 **Safe failure / backup path.** Two cases trigger the backup path:
 - the LLM provider is unreachable, rate-limited or times out;
@@ -98,7 +103,8 @@ Get a free Groq key at <https://console.groq.com/keys>.
 | `LLM_BASE_URL` | no | `https://api.groq.com/openai/v1` | Any OpenAI-compatible endpoint (OpenAI, OpenRouter, a local Ollama/vLLM server). |
 | `LLM_MODEL` | no | `openai/gpt-oss-120b` | Model identifier. |
 | `LLM_FALLBACK_MODELS` | no | `openai/gpt-oss-20b,qwen/qwen3.8-27b` | Comma-separated backup models tried on rate limit / provider error (each Groq model has its own token budget). |
-| `LLM_TOTAL_BUDGET_SECONDS` | no | `20` | Total time allowed for LLM attempts per request (keeps requests < 30 s). |
+| `LLM2_BASE_URL`, `LLM2_API_KEY`, `LLM2_MODELS` | no | none | Optional backup provider tried after the primary one (all three must be set; `LLM3_*` ... `LLM5_*` work the same way). Example Cerebras: `https://api.cerebras.ai/v1`, `gpt-oss-120b`. Example Gemini: `https://generativelanguage.googleapis.com/v1beta/openai`, `gemini-2.5-flash-lite`. |
+| `LLM_TOTAL_BUDGET_SECONDS` | no | `20` | Time allowed for one round of LLM attempts; the whole LLM stage is also capped at 22 s per request (keeps requests < 30 s). |
 | `LLM_REASONING_EFFORT` | no | `low` | Reasoning effort sent to gpt-oss models; set empty for models that do not accept it. |
 | `LLM_TIMEOUT_SECONDS` | no | `10` | Per-LLM-call timeout. |
 | `PORT` | no | `8000` | HTTP port. |
@@ -194,8 +200,8 @@ These cover:
 ## 4. Docker fallback
 
 ```bash
-docker pull docker.io/<DOCKERHUB_USER>/gridwise-llm:1.0.0
-docker run --rm -p 8000:8000 -e LLM_API_KEY=<your_groq_key> docker.io/<DOCKERHUB_USER>/gridwise-llm:1.0.0
+docker pull docker.io/kawser81/gridwise-llm:1.0.0
+docker run --rm -p 8000:8000 -e LLM_API_KEY=<your_groq_key> docker.io/kawser81/gridwise-llm:1.0.0
 curl -s http://localhost:8000/health        # {"status":"ok"}
 ```
 
@@ -249,7 +255,7 @@ samples/            Public sample cases (organizer-provided)
 
 ## 8. Known limitations
 
-- **Groq free-tier rate limits** (about 8k tokens/min per key and model; one request uses about 1.4k tokens). A sustained burst can still exhaust every key/model pair. Those requests fall back to the deterministic parser, which covers common phrasings but is less robust than the LLM. Responses stay valid.
+- **Free-tier rate limits.** Groq's free tier allows about 8k tokens/min per model per account, and one request uses about 1.4k tokens. Backup providers (`LLM2_*`) add capacity, but a sustained burst can still exhaust every target. Those requests fall back to the deterministic parser, which covers common phrasings but is less robust than the LLM. Responses stay valid.
 - **Ambiguous times.** Times without AM/PM are resolved from context: solar or maintenance work means daytime. Truly ambiguous notes may be misread.
 - **One directive per note.** Each note maps to exactly one directive, as the Problem Statement specifies. A note that mentions two rules is reduced to the dominant one.
 - **Slack penalty on conflicts.** If a request contains contradictory hard directives, the reserve and grid-cap limits are softened with a large penalty instead of failing. The organizers state that valid scoring cases are feasible.
