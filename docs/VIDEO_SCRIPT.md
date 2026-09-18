@@ -28,14 +28,14 @@ Show a directive interpretation in the sample response.
 
 Show `app/optimizer.py` and the equations in README.
 
-**1:45–2:05 — Verification**
+**1:45–2:10 — Verification**
 
-“Before returning JSON, independent replay checks every constraint and total. The reviewed branch passes 184 automated tests, including 100 random comparisons with an exhaustive dynamic program. It also passed all ten public cases through its actual HTTP API and real language models, with each local request below 1.7 seconds. Public deployment still needs separate verification.”
+“Before returning JSON, independent replay checks every constraint and total. The reviewed branch passes 184 automated tests, including 100 random comparisons with an exhaustive dynamic program. It passed all ten public cases through the production Vercel API and real language models at exact reference cost, with measured requests between 0.61 and 1.34 seconds.”
 
 Show the test run and `docs/VERIFICATION.md`.
 
-**2:05–2:40 — Run and delivery**
+**2:10–2:40 — Run and delivery**
 
-“Dependencies and configuration are documented in the README. The service runs locally with Uvicorn or from our Docker image, binds to all interfaces, and exposes the required health and optimization endpoints. The live test command checks the model's semantics, the schedule against organizer directives, its cost, and latency. Validated caching, bounded retries, and an optional backup model support repeated judging requests.”
+“Dependencies and configuration are documented in the README. The service runs on Vercel and from our public Docker image, and exposes the required health and optimization endpoints. The Groq key stays private in Vercel. The live test command checks semantics, schedule validity, cost, and latency. Bounded retries and two backup models support repeated judging requests.”
 
-Show `/health`, one actual POST, and live sample results once configured. Finish with the real public URL, repository, and exact fallback image reference after deployment. If these are still pending, state that clearly rather than presenting placeholder links as completed work.
+Show `/health`, one actual POST, and the production 10/10 results. Finish with `https://gridwise-bup-preli.vercel.app`, the event repository, and `amininrohul/gridwise:1.1.0`.

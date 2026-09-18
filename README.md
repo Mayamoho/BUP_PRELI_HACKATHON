@@ -2,7 +2,7 @@
 
 A FastAPI service that interprets operator notes using a real generative model, validates each directive, minimizes 24-hour grid cost, and independently verifies the returned schedule.
 
-Required endpoints: `GET /health` and `POST /optimize-energy`. The public judging endpoint and registry image reference must be supplied after deployment. Source stays private during the event according to the organizer's timing rule.
+Required endpoints: `GET /health` and `POST /optimize-energy`. The deployed judging API is `https://gridwise-bup-preli.vercel.app`, and the public fallback image is `docker.io/amininrohul/gridwise:1.1.0`. Source stays private during the event according to the organizer's timing rule.
 
 ## Run locally
 
@@ -103,44 +103,34 @@ The automated suite covers all ten public optimum costs, 100 random integer inst
 
 ## Vercel deployment
 
-The selected target is Vercel. The native FastAPI entrypoint is `app/main.py`; `.python-version` selects Python 3.12 and `vercel.json` sets a 30-second function duration. `.vercelignore` excludes secrets and development assets.
+Production API: **https://gridwise-bup-preli.vercel.app**
+
+The service is deployed on Vercel with the native FastAPI entrypoint `app/main.py`. `.python-version` selects Python 3.12 and `vercel.json` sets a 30-second function duration. `.vercelignore` excludes secrets and development assets. The Groq credential is stored as a private Vercel environment variable and is not present in the source or image.
 
 1. Import this GitHub repository into Vercel using an account with repository access. Select branch `codex/verified-api-vercel` for a review deployment, or the merged production branch later.
 2. Use repository root and the FastAPI framework preset. Keep default build settings; do not configure a frontend output directory or a Uvicorn start command.
 3. Set `LLM_API_KEY` as a secret, `LLM_BASE_URL=https://api.groq.com/openai/v1`, `LLM_MODEL=qwen/qwen3.8-27b`, `LLM_FALLBACK_MODELS=openai/gpt-oss-120b,openai/gpt-oss-20b`, and `LLM_REASONING_EFFORT=low`.
 4. Deploy; ensure the submitted URL permits unauthenticated access to both judging endpoints. Redeploy when environment variables change.
-5. From outside Vercel, check `/health` and run `scripts/run_samples.py https://YOUR_PROJECT.vercel.app`. Require 10/10 and measure latency with fresh notes, not only cache hits.
+5. From outside Vercel, check `/health` and run `scripts/run_samples.py https://gridwise-bup-preli.vercel.app`. Require 10/10 and measure latency with fresh notes, not only cache hits.
 
-Vercel deployment is not yet verified merely because configuration exists. Dependency installation, ASGI lifespan, solver behavior, cold-start latency and external provider connectivity must be tested on the actual deployment. Official guide: https://vercel.com/docs/frameworks/backend/fastapi
+On 2026-09-18, the production URL returned healthy and passed all 10 public cases with live model interpretation, ground-truth replay and exact reference costs. Measured end-to-end latency was 0.61–1.34 seconds for that run. This evidence does not guarantee hidden-case behavior or future provider quota. Official guide: https://vercel.com/docs/frameworks/backend/fastapi
 
 ## Docker fallback
 
 ```bash
-docker build -t gridwise-team:1.1.0 .
-docker run --rm -p 8000:8000 --env-file .env gridwise-team:1.1.0
+docker pull amininrohul/gridwise:1.1.0
+docker run --rm -p 8000:8000 --env-file .env amininrohul/gridwise:1.1.0
 ```
 
-The image runs as a non-root user, binds `0.0.0.0`, exposes port 8000 and has an HTTP health check. No credentials or sample answer pack are baked into it. The primary API may run on Vercel; the independently pullable fallback image is still required by the rubric.
+The published public image runs as a non-root user, binds `0.0.0.0`, exposes port 8000 and has an HTTP health check. No credentials or sample answer pack are baked into it. Its immutable reference is:
 
-After logging into your registry, replace `YOUR_DOCKERHUB_USER`:
+`docker.io/amininrohul/gridwise@sha256:0eaa230dde11440d379c8fe712781ebafc044247a8f16112f6ecf008acea769a`
 
-```bash
-docker tag gridwise-team:1.1.0 YOUR_DOCKERHUB_USER/gridwise:1.1.0
-docker push YOUR_DOCKERHUB_USER/gridwise:1.1.0
-```
-
-The organizer's fallback commands are:
-
-```bash
-docker pull YOUR_DOCKERHUB_USER/gridwise:1.1.0
-docker run --rm -p 8000:8000 --env-file .env YOUR_DOCKERHUB_USER/gridwise:1.1.0
-```
-
-Submit the real image tag or digest and keep it accessible throughout evaluation. A local image name is insufficient. The hosting URL, registry account and final video link are not created automatically by this code.
+The tag was confirmed through Docker Hub's unauthenticated registry API. A local container returned healthy and produced the exact SAMPLE-01 optimum of 38,365 BDT through a real model call.
 
 ## Submission and limitations
 
-Submit the public API base URL, event GitHub repository, this README/configuration, an exact pullable image reference, and a video of at most three minutes. A narration script is in `docs/VIDEO_SCRIPT.md`; update its test/deployment statements to match this branch's evidence before recording. Keep the repository private during the event and follow organizer instructions for post-deadline publication.
+Submit the public API base URL, event GitHub repository, this README/configuration, the exact pullable image reference above, and a video of at most three minutes. A narration script is in `docs/VIDEO_SCRIPT.md`. Keep the repository private during the event and follow organizer instructions for post-deadline publication.
 
 Scoring: interpretation 25, constraints 25, optimization 10, API 10, reliability 10, deployment 10, documentation 10. The video is a tie-break, not base points. Local checks cannot guarantee hidden-test scores or qualification.
 
