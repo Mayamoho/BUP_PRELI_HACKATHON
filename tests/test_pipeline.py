@@ -85,6 +85,7 @@ def test_malformed_requests(client):
 def test_end_to_end_without_llm(monkeypatch, client):
     monkeypatch.setenv("LLM_API_KEY", "")
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("LLM2_API_KEY", raising=False)
     for case in CASES:
         r = client.post("/optimize-energy", json=case["input"])
         assert r.status_code == 500

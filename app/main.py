@@ -64,14 +64,14 @@ async def unhandled(request, exc):
     return _error(500, "internal error")
 
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 async def health():
     if not llm_configured():
         return _error(503, "language model not configured")
     return {"status": "ok"}
 
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 async def root():
     return {"service": "GridWise LLM", "endpoints": ["GET /health", "POST /optimize-energy"],
             "llm_model": model_name(), "llm_configured": llm_configured()}
