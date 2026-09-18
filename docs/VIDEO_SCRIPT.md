@@ -38,4 +38,4 @@ Show the test run and `docs/VERIFICATION.md`.
 
 “Dependencies and configuration are documented in the README. The service runs on Vercel and from our public Docker image, and exposes the required health and optimization endpoints. The Groq key stays private in Vercel. The live test command checks semantics, schedule validity, cost, and latency. Bounded retries and two backup models support repeated judging requests.”
 
-Show `/health`, one actual POST, and the production 10/10 results. Finish with `https://gridwise-bup-preli.vercel.app`, the event repository, and `amininrohul/gridwise:1.1.0`.
+Show `/health`, one actual POST, and the production 10/10 results. Finish with `https://bup-preli-hackathon.onrender.com`, the event repository, and `kawser81/gridwise-llm:1.2.0`.

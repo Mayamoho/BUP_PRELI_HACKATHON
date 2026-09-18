@@ -2,7 +2,7 @@
 
 A FastAPI service that interprets operator notes using a real generative model, validates each directive, minimizes 24-hour grid cost, and independently verifies the returned schedule.
 
-Required endpoints: `GET /health` and `POST /optimize-energy`. The deployed judging API is `https://gridwise-bup-preli.vercel.app`, and the public fallback image is `docker.io/amininrohul/gridwise:1.1.0`. Source stays private during the event according to the organizer's timing rule.
+Required endpoints: `GET /health` and `POST /optimize-energy`. The deployed judging API is `https://bup-preli-hackathon.onrender.com` (Render), and the public fallback image is `docker.io/kawser81/gridwise-llm:1.2.0`. Source stays private during the event according to the organizer's timing rule.
 
 ## Run locally
 
@@ -53,11 +53,12 @@ The first sample's optimal cost is 38,365 BDT. Complete reference requests and r
 | `LLM_REASONING_EFFORT` | `low` for GPT-OSS; Qwen uses `none` for instruct mode |
 | `LLM_TIMEOUT_SECONDS` | 10 seconds per provider attempt |
 | `LLM_TOTAL_BUDGET_SECONDS` | 20 seconds per extraction invocation, bounded by the shared 23-second interpretation deadline |
+| `LLM2_BASE_URL`, `LLM2_API_KEY`, `LLM2_MODELS` | Optional backup **language model** provider (any OpenAI-compatible endpoint), tried after every primary model; all three must be set. `LLM3_*` to `LLM5_*` work the same way. Deployed with Gemini: `https://generativelanguage.googleapis.com/v1beta/openai`, `gemini-3.5-flash-lite` |
 | `PORT` | 8000 for Docker; local Uvicorn uses its `--port` option |
 
-The primary and fallback use the provider's Chat Completions JSON interface. The supplied key was verified against Groq; model availability depends on the account. Rate limits are real operational constraints: the observed account limit was 8,000 tokens per minute per tested model. Model rotation and bounded retries help, but sufficient quota is still needed for repeated hidden tests. The service does not purchase a plan or raise account limits automatically.
+The primary and fallback use the provider's Chat Completions JSON interface. The supplied key was verified against Groq; model availability depends on the account. Rate limits are real operational constraints: the observed account limit was 8,000 tokens per minute per tested model. Requests walk an ordered list of targets (provider, key, model). A target that answers HTTP 429 is skipped until its `retry-after` passes; one that is unreachable or answers another error is benched for 30 seconds so a dead provider costs one timeout, not one per request (if every target is benched they are all retried). A backup provider on a different account (for example Gemini through `LLM2_*`) adds independent quota; with Groq unreachable, the Gemini backup answered all 10 public cases correctly. Sufficient quota is still needed for repeated hidden tests. The service does not purchase a plan or raise account limits automatically.
 
-Every note must be interpreted by a real LLM before a successful plan can be returned. Provider failures and invalid model output produce controlled errors; there is no rule-only successful fallback. `app/fallback.py` remains a legacy helper for standalone regression tests and is not imported by the production interpretation path. Only validated model results are cached, for one hour, keyed by notes and battery capacity. Cache entries are deep-copied to prevent request contamination.
+Every note must be interpreted by a real LLM (primary or backup model) before a successful plan can be returned. Provider failures and invalid model output produce controlled errors; there is no rule-only successful fallback. `app/fallback.py` remains a legacy helper for standalone regression tests and is not imported by the production interpretation path. Only validated model results are cached, for one hour, keyed by notes and battery capacity. Cache entries are deep-copied to prevent request contamination.
 
 ## Architecture
 
@@ -100,9 +101,13 @@ Independent replay reconstructs directive effects without reusing solver matrice
 
 The automated suite covers all ten public optimum costs, 100 random integer instances checked against an independent exhaustive dynamic program, fractional values, invalid directives, infeasible constraints, corrupted schedules, invalid requests, note mappings and model failure behavior. Offline/API mock tests do not prove live language understanding. See [verification report](docs/VERIFICATION.md) for the checks actually run on this branch.
 
-## Vercel deployment
+## Render deployment (submitted)
 
-Production API: **https://gridwise-bup-preli.vercel.app**
+Production API: **https://bup-preli-hackathon.onrender.com**. Render auto-deploys `main`; environment variables `LLM_API_KEY`, `LLM_MODEL`, `LLM_FALLBACK_MODELS` and the optional `LLM2_*` backup are set as private Render environment variables. An external uptime monitor probes `/health` every 5 minutes so the instance never idles.
+
+## Vercel deployment (alternative)
+
+Alternative deployment target (same code, not the submitted URL): https://gridwise-bup-preli.vercel.app
 
 The service is deployed on Vercel with the native FastAPI entrypoint `app/main.py`. `.python-version` selects Python 3.12 and `vercel.json` sets a 30-second function duration. `.vercelignore` excludes secrets and development assets. The Groq credential is stored as a private Vercel environment variable and is not present in the source or image.
 
@@ -117,15 +122,13 @@ On 2026-09-18, the production URL returned healthy and passed all 10 public case
 ## Docker fallback
 
 ```bash
-docker pull amininrohul/gridwise:1.1.0
-docker run --rm -p 8000:8000 --env-file .env amininrohul/gridwise:1.1.0
+docker pull docker.io/kawser81/gridwise-llm:1.2.0
+cp .env.example .env    # then set LLM_API_KEY (and optionally LLM2_*)
+docker run --rm -p 8000:8000 --env-file .env docker.io/kawser81/gridwise-llm:1.2.0
+curl --fail http://127.0.0.1:8000/health   # {"status":"ok"}
 ```
 
-The published public image runs as a non-root user, binds `0.0.0.0`, exposes port 8000 and has an HTTP health check. No credentials or sample answer pack are baked into it. Its immutable reference is:
-
-`docker.io/amininrohul/gridwise@sha256:0eaa230dde11440d379c8fe712781ebafc044247a8f16112f6ecf008acea769a`
-
-The tag was confirmed through Docker Hub's unauthenticated registry API. A local container returned healthy and produced the exact SAMPLE-01 optimum of 38,365 BDT through a real model call.
+The image is built from this repository's `Dockerfile` at the final commit. It runs as a non-root user, binds `0.0.0.0`, exposes port 8000 and has an HTTP health check. No credentials or sample answer pack are baked into it; keys are passed only at runtime. `/health` returns 503 until an LLM key is configured, because every interpretation requires a language model.
 
 ## Submission and limitations
 
@@ -133,6 +136,6 @@ Submit the public API base URL, event GitHub repository, this README/configurati
 
 Scoring: interpretation 25, constraints 25, optimization 10, API 10, reliability 10, deployment 10, documentation 10. The video is a tie-break, not base points. Local checks cannot guarantee hidden-test scores or qualification.
 
-Malformed input returns 400, impossible interpreted constraints 422, missing model configuration makes health return 503, and model/internal/verification failure returns a controlled 500. There is a 256 KiB request limit, a bounded read deadline, and a 27-second processing deadline. Per-process caching does not survive serverless cold starts or share entries across instances. Adequate provider quota remains necessary.
+Malformed input returns 400 (unknown extra fields are ignored; types stay strict), impossible interpreted constraints 422, missing model configuration makes health return 503 (`GET` and `HEAD` are both supported), and model/internal/verification failure returns a controlled 500. There is a 256 KiB request limit, a bounded read deadline, and a 27-second processing deadline. Per-process caching does not survive serverless cold starts or share entries across instances. Adequate provider quota remains necessary.
 
 Credits: team repository implementation, Codex-assisted review and hardening, BUP supplied challenge/sample pack; FastAPI/Starlette, Pydantic, HTTPX, NumPy/SciPy/HiGHS, Uvicorn, python-dotenv and pytest. Review and understand the logic before presenting it as the team's submission.

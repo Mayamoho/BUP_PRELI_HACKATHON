@@ -43,12 +43,14 @@ On 2026-09-18, `/health` returned 200 and a fresh run of `scripts/run_samples.py
 
 The hosted run had a maximum and nearest-rank p95 of 1.34 seconds. These ten requests are evidence for the public cases at that time; they do not guarantee hidden-case behavior, future latency, provider availability or quota.
 
+## Final configuration checks (main, 2026-09-18 21:50)
+
+- 186 automated tests pass.
+- Primary model `openai/gpt-oss-120b`: 10/10 public cases (ground-truth replay, reference-optimal cost) and 28/28 on a set of paraphrased hidden-style notes covering every directive type, MW/MWh units, "half full", "one-fifth", midnight wrap and distractors. With `qwen/qwen3.8-27b` as primary the same set scored 26/28 (AM/PM misread), so Qwen is kept as a fallback only.
+- Groq unreachable, Gemini (`gemini-3.5-flash-lite`) configured as the `LLM2_*` backup language model: 10/10 public cases.
+- No provider reachable: controlled 500, never a rule-based success.
+- Black-box contract checks: 30 malformed or invalid requests return controlled 4xx without stack traces or secrets; requests with extra unknown fields, shuffled hour order, zero-capacity battery, zero rate limits, flat/zero tariffs and 1e6-scale values return schedules that pass independent replay.
+
 ## Container publication
 
-Public tag: `docker.io/amininrohul/gridwise:1.1.0`
-
-Immutable reference: `docker.io/amininrohul/gridwise@sha256:0eaa230dde11440d379c8fe712781ebafc044247a8f16112f6ecf008acea769a`
-
-Docker Hub's unauthenticated registry API reported the tag active with the same digest. The local copy of that image returned 200 from `/health`; a real-model SAMPLE-01 request passed independent replay at the exact 38,365 BDT optimum. No provider credential is baked into the image.
-
-The final walkthrough must still be uploaded with the submission. No qualification score is claimed before organizer evaluation.
+Public tag: `docker.io/kawser81/gridwise-llm:1.2.0`, built from the final `main`. A local container returned healthy (GET and HEAD) and passed 10/10 public cases through real model calls. No provider credential is baked into the image.
