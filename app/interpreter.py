@@ -1,98 +1,58 @@
-"""Operator-note interpretation pipeline: LLM -> deterministic guardrails -> (retry) -> backup parser."""
+"""LLM interpretation with strict mapping, bounded repair, and validated caching."""
 from __future__ import annotations
 
-import logging
+from collections import OrderedDict
+from copy import deepcopy
 import threading
 import time
-from collections import OrderedDict
 
-from .fallback import interpret_note_fallback
 from .guardrails import GuardrailError, validate_entry
-from .llm import LLMError, interpret_notes_llm
+from .llm import LLMError, interpret_notes_llm, llm_configured
 
-log = logging.getLogger("gridwise.interpreter")
-
-_CACHE: "OrderedDict[tuple, tuple[list[dict], str]]" = OrderedDict()
+_CACHE = OrderedDict()
 _CACHE_MAX = 512
-# total LLM time per request; the judge times out at 30 s and the optimizer needs well under 1 s
-REQUEST_BUDGET_SECONDS = 22.0
+_CACHE_TTL = 3600
 _LOCK = threading.Lock()
 
 
-def _validate_all(raw_items: list, notes: list[str], capacity: float) -> tuple[list[dict | None], list[str]]:
-    """Map LLM items to notes by note_index (falling back to position) and validate each."""
-    by_index: dict[int, dict] = {}
-    for pos, item in enumerate(raw_items):
-        if not isinstance(item, dict):
-            continue
-        idx = item.get("note_index", pos)
-        try:
-            idx = int(idx)
-        except (TypeError, ValueError):
-            idx = pos
-        if 0 <= idx < len(notes) and idx not in by_index:
-            by_index[idx] = item
-    results: list[dict | None] = []
-    problems: list[str] = []
-    for i in range(len(notes)):
-        item = by_index.get(i)
-        if item is None:
-            results.append(None)
-            problems.append(f"note_index {i}: missing")
-            continue
+def _validate_all(raw_items: list, notes: list[str], capacity: float) -> tuple[list[dict], list[str]]:
+    if not isinstance(raw_items, list) or len(raw_items) != len(notes):
+        return [], ["Exactly one interpretation per note is required"]
+    if any(not isinstance(item, dict) or type(item.get("note_index")) is not int
+           or item["note_index"] != index for index, item in enumerate(raw_items)):
+        return [], ["note_index must be complete, unique and in original order"]
+    results, problems = [], []
+    for i, item in enumerate(raw_items):
         try:
             results.append(validate_entry(item, i, capacity))
-        except GuardrailError as exc:
-            results.append(None)
-            problems.append(f"note_index {i}: {exc}")
+        except GuardrailError:
+            problems.append(f"note_index {i}: invalid directive shape or value")
     return results, problems
 
 
 def interpret(notes: list[str], capacity: float) -> tuple[list[dict], str]:
-    """Return (directive_interpretation entries in note order, source label)."""
+    if not llm_configured():
+        raise LLMError("LLM_API_KEY not configured")
     key = (tuple(notes), float(capacity))
     with _LOCK:
-        if key in _CACHE:
+        cached = _CACHE.get(key)
+        if cached and time.monotonic() - cached[0] < _CACHE_TTL:
             _CACHE.move_to_end(key)
-            return [dict(e) for e in _CACHE[key][0]], _CACHE[key][1]
-
-    results: list[dict | None] = [None] * len(notes)
-    source = "llm"
-    started = time.monotonic()
-    try:
-        raw = interpret_notes_llm(notes, capacity, budget=REQUEST_BUDGET_SECONDS)
+            return deepcopy(cached[1]), "llm-cache"
+    deadline = time.monotonic() + 23.0
+    feedback = None
+    for _ in range(2):
+        remaining = deadline - time.monotonic()
+        if remaining < 1.5:
+            break
+        raw = interpret_notes_llm(notes, capacity, feedback=feedback, budget_seconds=remaining)
         results, problems = _validate_all(raw, notes, capacity)
-        remaining = REQUEST_BUDGET_SECONDS - (time.monotonic() - started)
-        if problems and remaining > 3:  # one corrective retry with guardrail feedback, within the budget
-            log.info("guardrail rejected LLM output: %s", "; ".join(problems))
-            try:
-                raw2 = interpret_notes_llm(notes, capacity, feedback="; ".join(problems), budget=remaining)
-                retry, _ = _validate_all(raw2, notes, capacity)
-                results = [r if r is not None else r2 for r, r2 in zip(results, retry)]
-            except LLMError as exc:  # keep the valid first-pass entries
-                log.warning("corrective retry failed: %s", exc)
-    except LLMError as exc:
-        log.warning("LLM unavailable, using backup parser: %s", exc)
-        source = "fallback"
-
-    final: list[dict] = []
-    for i, entry in enumerate(results):
-        if entry is None:
-            if source == "llm":
-                source = "llm+fallback"
-            try:
-                entry = validate_entry(interpret_note_fallback(notes[i]), i, capacity)
-            except GuardrailError:
-                entry = validate_entry(
-                    {"directive_type": "no_op", "explanation": "Could not be validated; no constraint applied."},
-                    i,
-                    capacity,
-                )
-        final.append(entry)
-
-    if source == "llm":  # only cache clean LLM results so provider outages are retried next time
-        with _LOCK:
-            _CACHE[key] = (final, source)
-            while len(_CACHE) > _CACHE_MAX:
-                _CACHE.popitem(last=False)
-    return [dict(e) for e in final], source
+        if not problems:
+            with _LOCK:
+                _CACHE[key] = (time.monotonic(), deepcopy(results))
+                _CACHE.move_to_end(key)
+                while len(_CACHE) > _CACHE_MAX:
+                    _CACHE.popitem(last=False)
+            return results, "llm"
+        feedback = "; ".join(problems)
+    raise LLMError("Model interpretation failed guardrails")

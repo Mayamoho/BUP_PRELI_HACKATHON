@@ -1,0 +1,17 @@
+.git/
+.venv/
+.env
+.env.*
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+tests/
+scripts/
+docs/
+artifacts/
+examples/
+*.pdf
+*.zip
+BUP_CSE_FEST_2026_Preli_Public_Sample_Cases.json
+requirements-dev.txt
+requirements-video.txt

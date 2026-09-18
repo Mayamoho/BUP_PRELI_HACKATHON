@@ -44,8 +44,6 @@ def _hour(v: Any, allow_24: bool = False) -> int:
     h = int(round(f))
     if h == 24 and allow_24:
         return 24
-    if h == 24:
-        h = 0
     if not 0 <= h <= 23:
         raise GuardrailError("hour out of range")
     return h
@@ -104,8 +102,6 @@ def validate_entry(raw: dict, note_index: int, capacity: float) -> dict:
     if t == "solar_reduction":
         if raw.get("factor") is not None:
             f = _num(raw["factor"], "factor")
-            if 1 < f <= 100:  # percent given instead of fraction
-                f /= 100
         elif raw.get("reduction_percent") is not None:
             f = 1 - _num(raw["reduction_percent"], "reduction_percent") / 100
         else:
